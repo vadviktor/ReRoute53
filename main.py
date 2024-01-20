@@ -3,19 +3,20 @@
 import argparse
 import sys
 from os import getenv
-from typing import Union
 
 import boto3
 import requests
 from botocore.exceptions import ClientError
+from dotenv import load_dotenv
 from sentry_sdk import capture_exception
 from sentry_sdk import init as sentry_init
-from sentry_sdk.crons import monitor
 
 AWS_REGION = "eu-west-1"
 
 
 def main():
+    load_dotenv()
+
     parser = argparse.ArgumentParser(
         formatter_class=argparse.RawDescriptionHelpFormatter,
         description="""
@@ -70,7 +71,6 @@ def main():
     )
 
 
-@monitor(monitor_slug="router")
 def update_ip(hosted_zone_id, record_name, key, secret):
     try:
         pub_ip = public_ip()
@@ -135,7 +135,7 @@ def route53_client(key, secret):
     )
 
 
-def check_env_vars() -> Union[str, None]:
+def check_env_vars():
     """
     Check that all required environment variables are set.
 
