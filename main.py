@@ -5,6 +5,7 @@ import sys
 from os import getenv
 
 import boto3
+import psycopg
 import requests
 from botocore.exceptions import ClientError
 from dotenv import load_dotenv
@@ -30,6 +31,11 @@ def main():
             - AWS_HOSTED_ZONE_ID
             - AWS_RECORD_NAME
             - SENTRY_DSN
+            - DB_HOST
+            - DB_PORT
+            - DB_USER
+            - DB_PASSWORD
+            - DB_NAME
         """,
     )
 
@@ -70,6 +76,14 @@ def main():
         getenv("AWS_SECRET_ACCESS_KEY"),
     )
 
+    push_metric(
+        getenv("DB_USER"),
+        getenv("DB_PASSWORD"),
+        getenv("DB_HOST"),
+        getenv("DB_PORT"),
+        getenv("DB_NAME"),
+    )
+
 
 def update_ip(hosted_zone_id, record_name, key, secret):
     try:
@@ -78,7 +92,7 @@ def update_ip(hosted_zone_id, record_name, key, secret):
 
         if pub_ip == reg_ip:
             print("IP is already updated")
-            sys.exit(0)
+            return
 
         route53_client(key, secret).change_resource_record_sets(
             HostedZoneId=hosted_zone_id,
@@ -149,12 +163,33 @@ def check_env_vars():
         "AWS_HOSTED_ZONE_ID",
         "AWS_RECORD_NAME",
         "SENTRY_DSN",
+        "DB_HOST",
+        "DB_PORT",
+        "DB_USER",
+        "DB_PASSWORD",
+        "DB_NAME",
     ]
 
     missing_env_vars = [var for var in required_env_vars if getenv(var) is None]
 
     if missing_env_vars:
         return f"Error: Missing required environment variables: {', '.join(missing_env_vars)}"
+
+
+def push_metric(user, password, host, port, db):
+    """Track the timely run of the script."""
+
+    c = f"postgresql://{user}:{password}@{host}:{port}/{db}"
+
+    with psycopg.connect(conninfo=c, autocommit=True) as conn:
+        cur = conn.cursor()
+        print("Pushing metric")
+        cur.execute(
+            """
+            INSERT INTO cron_jobs (label) VALUES (%s)
+            """,
+            ("route53-ddns-updater",),
+        )
 
 
 if __name__ == "__main__":
