@@ -186,7 +186,7 @@ def push_metric(user, password, host, port, db):
         print("Pushing metric")
         cur.execute(
             """
-            INSERT INTO cron_jobs (label) VALUES (%s)
+            INSERT INTO cron_jobs (script_name) VALUES (%s)
             """,
             ("route53-ddns-updater",),
         )
