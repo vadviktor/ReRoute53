@@ -1,0 +1,7 @@
+AWS_ACCESS_KEY_ID="op://Projects/ddns-updater/Access key ID"
+AWS_SECRET_ACCESS_KEY="op://Projects/ddns-updater/Secret access key"
+AWS_HOSTED_ZONE_ID="op://Projects/ddns-updater/Hosted zone ID"
+AWS_RECORD_NAME="op://Projects/ddns-updater/record name"
+AWS_REGION="op://Projects/ddns-updater/Region"
+SENTRY_DSN="op://Projects/ddns-updater/Sentry DSN"
+HEALTHCHECK_URL="op://Projects/ddns-updater/Healthcheck URL"

@@ -3,15 +3,16 @@
 import argparse
 import sys
 from os import getenv
+from typing import Optional
 
-import boto3
 import requests
+from boto3.session import Session
 from botocore.exceptions import ClientError
 from dotenv import load_dotenv
+from mypy_boto3_route53.client import Route53Client
+from mypy_boto3_route53.type_defs import ListResourceRecordSetsResponseTypeDef
 from sentry_sdk import capture_exception
 from sentry_sdk import init as sentry_init
-
-AWS_REGION = "eu-west-1"
 
 
 def main():
@@ -63,7 +64,7 @@ def main():
         print(f"Registered IP address is {ip}")
         sys.exit(0)
 
-    update_ip(
+    _update_ip(
         getenv("AWS_HOSTED_ZONE_ID"),
         getenv("AWS_RECORD_NAME"),
         getenv("AWS_ACCESS_KEY_ID"),
@@ -71,16 +72,17 @@ def main():
     )
 
 
-def update_ip(hosted_zone_id, record_name, key, secret):
+def _update_ip(hosted_zone_id, record_name, key, secret):
     try:
         pub_ip = public_ip()
         reg_ip = registered_ip(hosted_zone_id, record_name, key, secret)
+        _report_healthcheck()
 
         if pub_ip == reg_ip:
             print("IP is already updated")
             sys.exit(0)
 
-        route53_client(key, secret).change_resource_record_sets(
+        _route53_client(key, secret).change_resource_record_sets(
             HostedZoneId=hosted_zone_id,
             ChangeBatch={
                 "Changes": [
@@ -102,15 +104,33 @@ def update_ip(hosted_zone_id, record_name, key, secret):
         sys.exit(1)
 
 
-def registered_ip(hosted_zone_id, record_name, key, secret):
+def _report_healthcheck():
     try:
-        response = route53_client(key, secret).list_resource_record_sets(
+        healthcheck_url = getenv("HEALTHCHECK_URL")
+        if healthcheck_url is None:
+            raise ValueError("HEALTHCHECK_URL environment variable is not set.")
+
+        requests.get(healthcheck_url).raise_for_status()
+    except (requests.RequestException, ValueError) as e:
+        capture_exception(e)
+        sys.exit(1)
+
+
+def registered_ip(hosted_zone_id, record_name, key, secret) -> Optional[str]:
+    try:
+        response: ListResourceRecordSetsResponseTypeDef = _route53_client(
+            key, secret
+        ).list_resource_record_sets(
             HostedZoneId=hosted_zone_id,
             StartRecordName=record_name,
             MaxItems="1",
         )
 
-        return response["ResourceRecordSets"][0]["ResourceRecords"][0]["Value"]
+        return (
+            response.get("ResourceRecordSets", [])[0]
+            .get("ResourceRecords", [])[0]
+            .get("Value")
+        )
     except ClientError as e:
         capture_exception(e)
         sys.exit(1)
@@ -126,16 +146,16 @@ def public_ip():
         sys.exit(1)
 
 
-def route53_client(key, secret):
-    return boto3.client(
+def _route53_client(key: str, secret: str) -> Route53Client:
+    return Session().client(
         "route53",
         aws_access_key_id=key,
         aws_secret_access_key=secret,
-        region_name=AWS_REGION,
+        region_name=getenv("AWS_REGION"),
     )
 
 
-def check_env_vars():
+def check_env_vars() -> str | None:
     """
     Check that all required environment variables are set.
 
@@ -143,7 +163,7 @@ def check_env_vars():
         None if all required environment variables are set, otherwise the list of the missing variables.
     """
 
-    required_env_vars = [
+    required_env_vars: list[str] = [
         "AWS_ACCESS_KEY_ID",
         "AWS_SECRET_ACCESS_KEY",
         "AWS_HOSTED_ZONE_ID",
@@ -151,10 +171,14 @@ def check_env_vars():
         "SENTRY_DSN",
     ]
 
-    missing_env_vars = [var for var in required_env_vars if getenv(var) is None]
+    missing_env_vars: list[str] = [
+        var for var in required_env_vars if getenv(var) is None
+    ]
 
     if missing_env_vars:
         return f"Error: Missing required environment variables: {', '.join(missing_env_vars)}"
+
+    return None
 
 
 if __name__ == "__main__":
