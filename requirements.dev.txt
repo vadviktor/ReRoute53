@@ -3,5 +3,5 @@
 ruff
 rich
 mypy
-boto3-stubs[route53]
+
 types-requests
