@@ -2,21 +2,36 @@
 
 import argparse
 import sys
-from os import getenv
+from pathlib import Path
 from typing import Optional
 
-import requests
+import httpx
 from boto3.session import Session
 from botocore.exceptions import ClientError
-from dotenv import load_dotenv
 from mypy_boto3_route53.client import Route53Client
 from mypy_boto3_route53.type_defs import ListResourceRecordSetsResponseTypeDef
+from pydantic import Field, HttpUrl
+from pydantic_settings import BaseSettings, SettingsConfigDict
 from sentry_sdk import capture_exception
 from sentry_sdk import init as sentry_init
 
 
+class Settings(BaseSettings):
+    model_config = SettingsConfigDict(
+        env_file=Path(__file__).parent / ".env", env_file_encoding="utf-8"
+    )
+
+    aws_access_key_id: str = Field(min_length=16)
+    aws_secret_access_key: str = Field(min_length=16)
+    aws_hosted_zone_id: str = Field(min_length=16)
+    aws_record_name: str = Field(min_length=5)
+    aws_region: str = Field(min_length=5)
+    sentry_dsn: HttpUrl
+    healthcheck_url: HttpUrl
+
+
 def main():
-    load_dotenv()
+    sentry_init(str(settings.sentry_dsn))
 
     parser = argparse.ArgumentParser(
         formatter_class=argparse.RawDescriptionHelpFormatter,
@@ -24,72 +39,45 @@ def main():
         AWS Route53 updater
         -------------------
         The default action is to update the IP address for the given record name.
-
-        Required ENV vars:
-            - AWS_ACCESS_KEY_ID
-            - AWS_SECRET_ACCESS_KEY
-            - AWS_HOSTED_ZONE_ID
-            - AWS_RECORD_NAME
-            - SENTRY_DSN
         """,
     )
-
     subparsers = parser.add_subparsers(dest="command")
     subparsers.add_parser("whats_my_ip", help="Check my real IP address and exit")
     subparsers.add_parser(
         "registered_ip", help="Check the IP address for record-name and exit"
     )
-
     args = parser.parse_args()
-
-    env_vars_result = check_env_vars()
-    if env_vars_result:
-        print(env_vars_result)
-        parser.print_help()
-        sys.exit(1)
-
-    sentry_init(getenv("SENTRY_DSN"))
 
     if args.command == "whats_my_ip":
         print(f"My current IP address is {public_ip()}")
         sys.exit(0)
 
     if args.command == "registered_ip":
-        ip = registered_ip(
-            getenv("AWS_HOSTED_ZONE_ID"),
-            getenv("AWS_RECORD_NAME"),
-            getenv("AWS_ACCESS_KEY_ID"),
-            getenv("AWS_SECRET_ACCESS_KEY"),
-        )
+        ip = registered_ip()
         print(f"Registered IP address is {ip}")
         sys.exit(0)
 
-    _update_ip(
-        getenv("AWS_HOSTED_ZONE_ID"),
-        getenv("AWS_RECORD_NAME"),
-        getenv("AWS_ACCESS_KEY_ID"),
-        getenv("AWS_SECRET_ACCESS_KEY"),
-    )
+    _update_ip()
 
 
-def _update_ip(hosted_zone_id, record_name, key, secret):
+def _update_ip():
     try:
         pub_ip = public_ip()
-        reg_ip = registered_ip(hosted_zone_id, record_name, key, secret)
+        reg_ip = registered_ip()
         _report_healthcheck()
 
         if pub_ip == reg_ip:
             print("IP is already updated")
             sys.exit(0)
 
-        _route53_client(key, secret).change_resource_record_sets(
-            HostedZoneId=hosted_zone_id,
+        _route53_client().change_resource_record_sets(
+            HostedZoneId=settings.aws_hosted_zone_id,
             ChangeBatch={
                 "Changes": [
                     {
                         "Action": "UPSERT",
                         "ResourceRecordSet": {
-                            "Name": record_name,
+                            "Name": settings.aws_record_name,
                             "Type": "A",
                             "TTL": 3600,
                             "ResourceRecords": [{"Value": pub_ip}],
@@ -106,24 +94,20 @@ def _update_ip(hosted_zone_id, record_name, key, secret):
 
 def _report_healthcheck():
     try:
-        healthcheck_url = getenv("HEALTHCHECK_URL")
-        if healthcheck_url is None:
-            raise ValueError("HEALTHCHECK_URL environment variable is not set.")
-
-        requests.get(healthcheck_url).raise_for_status()
-    except (requests.RequestException, ValueError) as e:
+        httpx.get(str(settings.healthcheck_url)).raise_for_status()
+    except httpx.HTTPStatusError as e:
         capture_exception(e)
         sys.exit(1)
 
 
-def registered_ip(hosted_zone_id, record_name, key, secret) -> Optional[str]:
+def registered_ip() -> Optional[str]:
     try:
-        response: ListResourceRecordSetsResponseTypeDef = _route53_client(
-            key, secret
-        ).list_resource_record_sets(
-            HostedZoneId=hosted_zone_id,
-            StartRecordName=record_name,
-            MaxItems="1",
+        response: ListResourceRecordSetsResponseTypeDef = (
+            _route53_client().list_resource_record_sets(
+                HostedZoneId=settings.aws_hosted_zone_id,
+                StartRecordName=settings.aws_record_name,
+                MaxItems="1",
+            )
         )
 
         return (
@@ -138,48 +122,23 @@ def registered_ip(hosted_zone_id, record_name, key, secret) -> Optional[str]:
 
 def public_ip():
     try:
-        response = requests.get("http://checkip.amazonaws.com/")
+        response = httpx.get("http://checkip.amazonaws.com/")
         response.raise_for_status()
         return response.text.strip()
-    except requests.RequestException as e:
+    except httpx.HTTPStatusError as e:
         capture_exception(e)
         sys.exit(1)
 
 
-def _route53_client(key: str, secret: str) -> Route53Client:
+def _route53_client() -> Route53Client:
     return Session().client(
         "route53",
-        aws_access_key_id=key,
-        aws_secret_access_key=secret,
-        region_name=getenv("AWS_REGION"),
+        aws_access_key_id=settings.aws_access_key_id,
+        aws_secret_access_key=settings.aws_secret_access_key,
+        region_name=settings.aws_region,
     )
 
 
-def check_env_vars() -> str | None:
-    """
-    Check that all required environment variables are set.
-
-    Returns:
-        None if all required environment variables are set, otherwise the list of the missing variables.
-    """
-
-    required_env_vars: list[str] = [
-        "AWS_ACCESS_KEY_ID",
-        "AWS_SECRET_ACCESS_KEY",
-        "AWS_HOSTED_ZONE_ID",
-        "AWS_RECORD_NAME",
-        "SENTRY_DSN",
-    ]
-
-    missing_env_vars: list[str] = [
-        var for var in required_env_vars if getenv(var) is None
-    ]
-
-    if missing_env_vars:
-        return f"Error: Missing required environment variables: {', '.join(missing_env_vars)}"
-
-    return None
-
-
 if __name__ == "__main__":
+    settings = Settings()  # type: ignore
     main()

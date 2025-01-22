@@ -1,7 +1,0 @@
--r requirements.txt
-
-ruff
-rich
-mypy
-
-types-requests

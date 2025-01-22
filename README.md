@@ -1,23 +1,27 @@
-# route53-ddns-updater-py
+# reroute53-py
 
 ## Setup
 
 ```powershell
-python -m venv .venv `
-& .\.venv\Scripts\Activate.ps1 `
-python -m pip install -U -r requirements.dev.txt
+uv sync `
+& .\.venv\Scripts\Activate.ps1
 ```
 
 ## Deploy
 
 ```powershell
-op inject -i .env.tpl -o .env
-docker -H "ssh://rpi5-8" build -t "rpi5-8:5000/route53-ddns-updater:1.1.0" -f Dockerfile .
-docker -H "ssh://rpi5-8" push "rpi5-8:5000/route53-ddns-updater:1.1.0"
+op inject -f -i .env.tpl -o .env
+$env:AWS_PROFILE = "ikon"
+aws ecr get-login-password --region eu-west-1 | docker login --username AWS --password-stdin 182497249286.dkr.ecr.eu-west-1.amazonaws.com
+docker build --platform linux/amd64,linux/arm64/v8 -t reroute53:latest .
+docker tag reroute53:latest 182497249286.dkr.ecr.eu-west-1.amazonaws.com/reroute53:latest
+docker push 182497249286.dkr.ecr.eu-west-1.amazonaws.com/reroute53:latest
 ```
 
 ## Test. Apply to crontab.
 
 ```powershell
-docker -H "ssh://rpi5-8" run --rm "rpi5-8:5000/route53-ddns-updater:1.1.0"
+$env:AWS_PROFILE = "ikon"
+aws ecr get-login-password --region eu-west-1 | docker login --username AWS --password-stdin 182497249286.dkr.ecr.eu-west-1.amazonaws.com
+docker run --rm 182497249286.dkr.ecr.eu-west-1.amazonaws.com/reroute53:latest
 ```
